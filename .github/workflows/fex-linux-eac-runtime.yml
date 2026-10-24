@@ -1,0 +1,89 @@
+name: FEX Linux EAC Runtime (ARM64)
+
+# This builds the Linux FEX emulator itself, not Proton's FEXCore .wcp.
+# Experimental build artifact: not a drop-in DroidDeck component.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "StonkGuy/FEX source tag (pinned)"
+        required: false
+        default: "eac-2610.3"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Linux FEX on ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld cmake ninja-build git python3 pkg-config nasm \
+            zstd file binutils ca-certificates \
+            libssl-dev libcap-dev libdrm-dev libepoxy-dev \
+            libvulkan-dev libx11-dev libxcb1-dev libxrandr-dev
+
+      - name: Fetch pinned EAC FEX source
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          test "$REF" = "eac-2610.3" || { echo "::error::Only reviewed eac-2610.3 is supported"; exit 1; }
+          git clone --depth 1 --branch "$REF" --recurse-submodules --shallow-submodules \
+            https://github.com/StonkGuy/FEX.git source
+          actual="$(git -C source rev-parse HEAD)"
+          expected="938eedfcd79eb00e86561fbdf4933770766f0ba9"
+          test "$actual" = "$expected" || { echo "::error::Unexpected source commit $actual"; exit 1; }
+          echo "FEX_SOURCE_SHA=$actual" >> "$GITHUB_ENV"
+
+      - name: Configure emulator (Linux arm64)
+        run: |
+          cmake -S source -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DBUILD_TESTING=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
+            -DBUILD_THUNKS=OFF -DBUILD_FEXCONFIG=OFF \
+            -DENABLE_LTO=OFF -DENABLE_ASSERTIONS=OFF \
+            -DTUNE_CPU=generic -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+
+      - name: Build full emulator
+        run: cmake --build build --parallel 4
+
+      - name: Assemble diagnostic runtime archive
+        run: |
+          set -euo pipefail
+          test -d build/Bin || { echo "::error::FEX build/Bin missing"; exit 1; }
+          find build/Bin -maxdepth 2 -type f -print
+          test -f build/Bin/FEX || { echo "::error::Expected build/Bin/FEX missing"; exit 1; }
+          file build/Bin/FEX
+          file build/Bin/FEX | grep -q "ELF 64-bit.*ARM aarch64" \
+            || { echo "::error::FEX is not a Linux AArch64 binary"; exit 1; }
+          mkdir -p stage/FEX-EAC-Linux-ARM64
+          cp -a build/Bin stage/FEX-EAC-Linux-ARM64/
+          cat > stage/FEX-EAC-Linux-ARM64/README.txt <<'EOF'
+          Experimental native Linux ARM64 FEX emulator build from StonkGuy/FEX.
+          This is NOT a DroidDeck WCP and is NOT a tested Android/proot installation.
+          The host needs a suitable glibc Linux environment, x86-64 rootfs,
+          compatible FEX data/thunks and working kernel ptrace/seccomp/signal support.
+          Do not overwrite existing FEX without backups and integration tests.
+          EOF
+          printf 'source=StonkGuy/FEX\ntag=eac-2610.3\ncommit=%s\n' "$FEX_SOURCE_SHA" \
+            > stage/FEX-EAC-Linux-ARM64/SOURCE.txt
+          (cd stage/FEX-EAC-Linux-ARM64 && find Bin -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > stage/FEX-EAC-Linux-ARM64/SHA256SUMS
+          mkdir -p out
+          tar -C stage -cf - FEX-EAC-Linux-ARM64 | zstd -T0 -10 -o out/FEX-EAC-Linux-ARM64.tar.zst
+          zstd -dc out/FEX-EAC-Linux-ARM64.tar.zst | tar -tf - | head -50
+
+      - name: Upload ARM64 Linux runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: FEX-EAC-Linux-ARM64
+          path: out/FEX-EAC-Linux-ARM64.tar.zst
+          if-no-files-found: error
+          retention-days: 30

@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           test "${{ matrix.version }}" = "2610.3"
-          git clone --depth 1 --branch eac-2610.3 --recurse-submodules --shallow-submodules \\
+          git clone --depth 1 --branch eac-2610.3 --recurse-submodules --shallow-submodules \
             https://github.com/StonkGuy/FEX.git source
           git -C source fetch --depth 1 origin refs/tags/eac-2610.3:refs/tags/eac-2610.3
           test "$(git -C source describe --tags --exact-match)" = "eac-2610.3"
